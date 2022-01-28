@@ -24,6 +24,7 @@ import (
 
 	"github.com/gorilla/mux"
 	zmw "github.com/openzipkin/zipkin-go/middleware/http"
+	"github.com/openzipkin/zipkin-go/propagation/baggage"
 	"github.com/tetratelabs/multierror"
 	"github.com/tetratelabs/run"
 
@@ -36,6 +37,8 @@ const (
 	flagErrors         = "ep-errors"
 	flagHeaders        = "ep-headers"
 	flagHandleFailures = "ep-handle-failures"
+
+	baggageRequestID = "X-Request-Id"
 
 	errProxyService   pkg.Error = "invalid or no proxy service set"
 	errPercentage     pkg.Error = "expected percentage value between 0 and 100"
@@ -129,7 +132,11 @@ func (ep *Endpoints) PreRun() error {
 	router.Methods("GET").PathPrefix("/proxy/{service}").HandlerFunc(ep.proxy)
 	router.Methods("GET").PathPrefix("/").HandlerFunc(ep.echoHandler)
 	ep.tracer = ep.SvcTracer.GetTracer()
-	ep.handler = zmw.NewServerMiddleware(ep.tracer)(router)
+
+	// Add baggage fields to be extracted and propagated.
+	baggageHandler := baggage.New(baggageRequestID)
+
+	ep.handler = zmw.NewServerMiddleware(ep.tracer, zmw.EnableBaggage(baggageHandler))(router)
 
 	return nil
 }
