@@ -29,8 +29,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/openzipkin/zipkin-go"
-	zmw "github.com/openzipkin/zipkin-go/middleware/http"
 )
 
 // setErrors allows one to set the percentage of error responses this service
@@ -218,11 +216,10 @@ func (ep *Endpoints) crash(w http.ResponseWriter, r *http.Request) {
 // so they will show up in your trace graph.
 func (ep *Endpoints) emulateConcurrency(w http.ResponseWriter, r *http.Request) {
 	var (
-		ctx   = r.Context()
-		vars  = mux.Vars(r)
-		d     time.Duration
-		err   error
-		pSpan = zipkin.SpanFromContext(r.Context()).Context()
+		ctx  = r.Context()
+		vars = mux.Vars(r)
+		d    time.Duration
+		err  error
 	)
 	if strErrors, ok := vars["duration"]; ok {
 		d, err = time.ParseDuration(strErrors)
@@ -254,7 +251,7 @@ func (ep *Endpoints) emulateConcurrency(w http.ResponseWriter, r *http.Request) 
 
 	proc := func(i int) {
 		defer wg.Done()
-		span := ep.tracer.StartSpan(fmt.Sprintf("proc-%d", i), zipkin.Parent(pSpan))
+		span := ep.tracer.StartSpanFromContext(ctx, fmt.Sprintf("proc-%d", i))
 		defer span.Finish()
 
 		span.Tag("duration", d.String())
@@ -343,7 +340,7 @@ func (ep *Endpoints) proxy(w http.ResponseWriter, r *http.Request) {
 		p    = httputil.NewSingleHostReverseProxy(u)
 	)
 
-	p.Transport, _ = zmw.NewTransport(ep.tracer, zmw.RoundTripper(p.Transport))
+	p.Transport, _ = ep.Instrumenter.Transport(p.Transport)
 	r.URL, _ = url.Parse(svc + path)
 
 	if h {

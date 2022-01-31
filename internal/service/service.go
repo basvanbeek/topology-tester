@@ -22,13 +22,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/basvanbeek/topology-tester/pkg/observability"
 	"github.com/gorilla/mux"
-	zmw "github.com/openzipkin/zipkin-go/middleware/http"
 	"github.com/tetratelabs/multierror"
 	"github.com/tetratelabs/run"
 
 	"github.com/basvanbeek/topology-tester/pkg"
-	"github.com/basvanbeek/topology-tester/pkg/zipkin"
 )
 
 const (
@@ -50,12 +49,12 @@ const (
 // tracer to instrument themselves.
 type Endpoints struct {
 	// dependencies
-	SvcTracer *zipkin.Service
+	Instrumenter observability.Instrumenter
 
 	ServiceName string
 
 	handler http.Handler
-	tracer  *zipkin.Tracer
+	tracer  observability.Tracer
 
 	// service globals protected by mutex mtx
 	mtx            sync.RWMutex
@@ -114,8 +113,8 @@ func (ep *Endpoints) Validate() error {
 
 // PreRun implements run.PreRunner.
 func (ep *Endpoints) PreRun() error {
-	if ep.SvcTracer == nil || ep.SvcTracer.GetTracer() == nil {
-		return errors.New("missing Zipkin tracer to attach to")
+	if ep.Instrumenter == nil || ep.Instrumenter.Tracer() == nil {
+		return errors.New("missing tracer to attach to")
 	}
 
 	// create our service router
@@ -128,8 +127,9 @@ func (ep *Endpoints) PreRun() error {
 	router.Methods("GET").Path("/local/{concurrency}/latency/{duration}").HandlerFunc(ep.emulateConcurrency)
 	router.Methods("GET").PathPrefix("/proxy/{service}").HandlerFunc(ep.proxy)
 	router.Methods("GET").PathPrefix("/").HandlerFunc(ep.echoHandler)
-	ep.tracer = ep.SvcTracer.GetTracer()
-	ep.handler = zmw.NewServerMiddleware(ep.tracer)(router)
+	ep.tracer = ep.Instrumenter.Tracer()
+
+	ep.handler = ep.Instrumenter.Middleware()(router)
 
 	return nil
 }

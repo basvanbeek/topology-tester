@@ -18,26 +18,27 @@
 package zipkin
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"time"
 
+	"github.com/basvanbeek/topology-tester/pkg/observability"
 	"github.com/openzipkin/zipkin-go"
+	zmw "github.com/openzipkin/zipkin-go/middleware/http"
+	"github.com/openzipkin/zipkin-go/propagation/baggage"
 	"github.com/openzipkin/zipkin-go/reporter"
-	"github.com/openzipkin/zipkin-go/reporter/http"
+	zrpr "github.com/openzipkin/zipkin-go/reporter/http"
 	"github.com/tetratelabs/multierror"
 	"github.com/tetratelabs/run"
 	"github.com/tetratelabs/run/pkg/version"
 
 	"github.com/basvanbeek/topology-tester/pkg"
 )
-
-// Tracer is a convenience type alias for zipkin.Tracer so our packages only
-// need to import this package for Tracing support.
-type Tracer = zipkin.Tracer
 
 // flags
 const (
@@ -60,7 +61,7 @@ type Service struct {
 	LocalHostport   string
 	Address         string
 	SampleRate      float64
-	Tracer          *zipkin.Tracer
+	zipkinTracer    *zipkin.Tracer
 	Reporter        reporter.Reporter
 	SingleHostSpans bool
 
@@ -70,9 +71,10 @@ type Service struct {
 
 // static compile time run interfaces validation
 var (
-	_ run.Config    = (*Service)(nil)
-	_ run.PreRunner = (*Service)(nil)
-	_ run.Service   = (*Service)(nil)
+	_ run.Config                 = (*Service)(nil)
+	_ run.PreRunner              = (*Service)(nil)
+	_ run.Service                = (*Service)(nil)
+	_ observability.Instrumenter = (*Service)(nil)
 )
 
 // Name implements run.Unit.
@@ -87,11 +89,6 @@ func (s *Service) GroupName(name string) {
 	if s.Servicename == "" {
 		s.Servicename = name
 	}
-}
-
-// GetTracer returns the Zipkin Tracer
-func (s Service) GetTracer() *zipkin.Tracer {
-	return s.Tracer
 }
 
 // FlagSet implements run.Config
@@ -191,16 +188,16 @@ func (s *Service) PreRun() error {
 	if rep == nil {
 		// we create our own reporter
 		s.ownsReporter = true
-		rep = http.NewReporter(s.Address)
+		rep = zrpr.NewReporter(s.Address)
 	}
 
 	// create our tracer
-	s.Tracer, err = zipkin.NewTracer(
+	s.zipkinTracer, err = zipkin.NewTracer(
 		rep,
 		zipkin.WithLocalEndpoint(ep),
 		zipkin.WithSharedSpans(!s.SingleHostSpans),
 		zipkin.WithSampler(sampler),
-		zipkin.WithTags(map[string]string{"tetrate": version.Parse()}),
+		zipkin.WithTags(map[string]string{observability.VersionTag: version.Parse()}),
 	)
 	if err != nil {
 		if s.ownsReporter {
@@ -228,4 +225,68 @@ func (s *Service) GracefulStop() {
 		// we handle the lifecycle of the reporter internally
 		_ = s.Reporter.Close() // nolint: errcheck
 	}
+}
+
+type traceAdapter struct {
+	delegate *zipkin.Tracer
+}
+
+type spanAdapter struct {
+	delegate zipkin.Span
+	ctx      context.Context
+}
+
+// Context implements observability.Span
+func (s *spanAdapter) Context() context.Context {
+	return s.ctx
+}
+
+// TraceID implements observability.Span
+func (s *spanAdapter) TraceID() string {
+	return s.delegate.Context().TraceID.String()
+}
+
+// SetName implements observability.Span
+func (s *spanAdapter) SetName(name string) {
+	s.delegate.SetName(name)
+}
+
+// Tag implements observability.Span
+func (s *spanAdapter) Tag(key string, value string) {
+	s.delegate.Tag(key, value)
+}
+
+// Finish implements observability.Span
+func (s *spanAdapter) Finish() {
+	s.delegate.Finish()
+}
+
+// StartSpanFromContext implements observability.Tracer
+func (t *traceAdapter) StartSpanFromContext(ctx context.Context, name string) observability.Span {
+	span, ctx := t.delegate.StartSpanFromContext(ctx, name)
+	return &spanAdapter{span, ctx}
+}
+
+// SpanFromContext implements observability.Contexter
+func (s *Service) SpanFromContext(ctx context.Context) observability.Span {
+	span := zipkin.SpanOrNoopFromContext(ctx)
+	return &spanAdapter{span, ctx}
+}
+
+// Tracer implements observability.Tracerer
+func (s Service) Tracer() observability.Tracer {
+	return &traceAdapter{delegate: s.zipkinTracer}
+}
+
+// Middleware implements observability.Middlewareer
+func (s *Service) Middleware() func(http.Handler) http.Handler {
+	// Add baggage fields to be extracted and propagated.
+	baggageHandler := baggage.New(observability.BaggageRequestID)
+
+	return zmw.NewServerMiddleware(s.zipkinTracer, zmw.EnableBaggage(baggageHandler))
+}
+
+// Transport implements observability.Transporter
+func (s *Service) Transport(transport http.RoundTripper) (http.RoundTripper, error) {
+	return zmw.NewTransport(s.zipkinTracer, zmw.RoundTripper(transport))
 }
