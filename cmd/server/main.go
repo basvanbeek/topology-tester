@@ -20,21 +20,24 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tetratelabs/run"
-	"github.com/tetratelabs/run/pkg/signal"
-
 	"github.com/basvanbeek/topology-tester/internal/service"
 	pkghttp "github.com/basvanbeek/topology-tester/pkg/http"
-	pkgzipkin "github.com/basvanbeek/topology-tester/pkg/zipkin"
+	pkgobs "github.com/basvanbeek/topology-tester/pkg/observability"
+	pkgskywalking "github.com/basvanbeek/topology-tester/pkg/observability/skywalking"
+	pkgzipkin "github.com/basvanbeek/topology-tester/pkg/observability/zipkin"
+
+	"github.com/tetratelabs/run"
+	"github.com/tetratelabs/run/pkg/signal"
 )
 
 const (
 	defaultServiceName       = "demosvc"
 	defaultHTTPListenAddress = ":8000"
 
-	defaultZipkinAddress   = "http://zipkin.istio-system.svc.cluster.local:9411/api/v2/spans"
-	defaultSampleRate      = 1.0
-	defaultSingleHostSpans = true
+	defaultZipkinAddress        = "http://zipkin.istio-system.svc.cluster.local:9411/api/v2/spans"
+	defaultSkywalkingOAPAddress = "oap.default.svc.cluster.local:11800"
+	defaultSampleRate           = 1.0
+	defaultSingleHostSpans      = true
 )
 
 func main() {
@@ -44,29 +47,44 @@ func main() {
 	if serviceName == "" {
 		serviceName = defaultServiceName
 	}
+	serviceInstanceName := os.Getenv("HOSTNAME")
+	if serviceInstanceName == "" {
+		serviceInstanceName = serviceName
+	}
 
 	g := run.Group{
 		Name:     serviceName,
-		HelpText: "Flexible HTTP service to create Zipkin observed topologies",
+		HelpText: "Flexible HTTP service to create observed topologies",
 	}
 
 	// init with sensible defaults
-	svcZipkin := &pkgzipkin.Service{
-		Servicename:     serviceName,
-		Address:         defaultZipkinAddress,
-		SampleRate:      defaultSampleRate,
-		SingleHostSpans: defaultSingleHostSpans,
+	svcObs := &pkgobs.Service{
+		ObservabilityInstrumenter: "zipkin",
+		Instrumenters: []pkgobs.InstrumenterService{&pkgzipkin.Service{
+			Servicename:     serviceName,
+			Address:         defaultZipkinAddress,
+			SampleRate:      defaultSampleRate,
+			SingleHostSpans: defaultSingleHostSpans,
+		},
+			&pkgskywalking.Service{
+				Servicename:         serviceName,
+				ServiceInstanceName: serviceInstanceName,
+				Address:             defaultSkywalkingOAPAddress,
+				SampleRate:          defaultSampleRate,
+			},
+		},
 	}
+
 	svcEndpoints := &service.Endpoints{
-		ServiceName: serviceName,
-		SvcTracer:   svcZipkin,
+		ServiceName:  serviceName,
+		Instrumenter: svcObs,
 	}
 	svcHTTP := &pkghttp.Service{
 		ListenAddress: defaultHTTPListenAddress,
 	}
 	g.Register(
 		new(signal.Handler),
-		svcZipkin,
+		svcObs,
 		svcEndpoints,
 		svcHTTP,
 		run.NewPreRunner(serviceName, func() error {

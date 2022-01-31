@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright (c) Bas van Beek 2022.
 # Copyright (c) Tetrate, Inc 2021.
 #
@@ -13,21 +15,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/bin/bash
 set -a
 
 # set defaults if not available
 : ${IMAGE:=basvanbeek/demoapp:latest}
 : ${NS:=obs-tester}
+: ${INSTRUMENTER:=zipkin}
+: ${DEPLOYMENT:=deployment.yaml}
 : ${ZIPKIN_ENDPOINT:=http://zipkin.istio-system.svc.cluster.local:9411/api/v2/spans}
 : ${ZIPKIN_SAMPLE_RATE:=1.0}
+: ${SKYWALKING_ENDPOINT:=oap.default.svc.cluster.local:11800}
+: ${SKYWALKING_SAMPLE_RATE:=1.0}
 
 # bootstrap 6 services
-SVCNAME=alpha   envsubst < deployment.yaml | kubectl apply -f -
-SVCNAME=beta    envsubst < deployment.yaml | kubectl apply -f -
-SVCNAME=gamma   envsubst < deployment.yaml | kubectl apply -f -
-SVCNAME=delta   envsubst < deployment.yaml | kubectl apply -f -
-SVCNAME=epsilon envsubst < deployment.yaml | kubectl apply -f -
-SVCNAME=zeta    envsubst < deployment.yaml | kubectl apply -f -
+if [[ $INSTRUMENTER = "zipkin" ]]
+then
+  DEPLOYMENT=deployment.yaml
+else
+  DEPLOYMENT=deployment-skywalking.yaml
+fi
+
+SVCNAME=alpha   envsubst < $DEPLOYMENT | kubectl apply -f -
+SVCNAME=beta    envsubst < $DEPLOYMENT | kubectl apply -f -
+SVCNAME=gamma   envsubst < $DEPLOYMENT | kubectl apply -f -
+SVCNAME=delta   envsubst < $DEPLOYMENT | kubectl apply -f -
+SVCNAME=epsilon envsubst < $DEPLOYMENT | kubectl apply -f -
+SVCNAME=zeta    envsubst < $DEPLOYMENT | kubectl apply -f -
 
 set +a

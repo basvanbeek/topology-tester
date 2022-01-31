@@ -21,8 +21,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/openzipkin/zipkin-go"
-
 	"github.com/basvanbeek/topology-tester/pkg"
 )
 
@@ -37,7 +35,7 @@ type response struct {
 
 func (ep *Endpoints) writeResponse(ctx context.Context, w http.ResponseWriter, res response) {
 	res.Service = ep.ServiceName
-	res.TraceID = traceID(ctx)
+	res.TraceID = ep.traceID(ctx)
 	w.Header().Add("Content-Type", "application/json")
 	if res.Code > 0 {
 		w.WriteHeader(res.Code)
@@ -49,6 +47,6 @@ func (ep *Endpoints) writeResponse(ctx context.Context, w http.ResponseWriter, r
 	}
 }
 
-func traceID(ctx context.Context) string {
-	return zipkin.SpanFromContext(ctx).Context().TraceID.String()
+func (ep *Endpoints) traceID(ctx context.Context) string {
+	return ep.Instrumenter.SpanFromContext(ctx).TraceID()
 }

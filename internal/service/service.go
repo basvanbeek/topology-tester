@@ -22,14 +22,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/basvanbeek/topology-tester/pkg/observability"
 	"github.com/gorilla/mux"
-	zmw "github.com/openzipkin/zipkin-go/middleware/http"
-	"github.com/openzipkin/zipkin-go/propagation/baggage"
 	"github.com/tetratelabs/multierror"
 	"github.com/tetratelabs/run"
 
 	"github.com/basvanbeek/topology-tester/pkg"
-	"github.com/basvanbeek/topology-tester/pkg/zipkin"
 )
 
 const (
@@ -37,8 +35,6 @@ const (
 	flagErrors         = "ep-errors"
 	flagHeaders        = "ep-headers"
 	flagHandleFailures = "ep-handle-failures"
-
-	baggageRequestID = "X-Request-Id"
 
 	errProxyService   pkg.Error = "invalid or no proxy service set"
 	errPercentage     pkg.Error = "expected percentage value between 0 and 100"
@@ -53,12 +49,12 @@ const (
 // tracer to instrument themselves.
 type Endpoints struct {
 	// dependencies
-	SvcTracer *zipkin.Service
+	Instrumenter observability.Instrumenter
 
 	ServiceName string
 
 	handler http.Handler
-	tracer  *zipkin.Tracer
+	tracer  observability.Tracer
 
 	// service globals protected by mutex mtx
 	mtx            sync.RWMutex
@@ -117,8 +113,8 @@ func (ep *Endpoints) Validate() error {
 
 // PreRun implements run.PreRunner.
 func (ep *Endpoints) PreRun() error {
-	if ep.SvcTracer == nil || ep.SvcTracer.GetTracer() == nil {
-		return errors.New("missing Zipkin tracer to attach to")
+	if ep.Instrumenter == nil || ep.Instrumenter.Tracer() == nil {
+		return errors.New("missing tracer to attach to")
 	}
 
 	// create our service router
@@ -131,12 +127,9 @@ func (ep *Endpoints) PreRun() error {
 	router.Methods("GET").Path("/local/{concurrency}/latency/{duration}").HandlerFunc(ep.emulateConcurrency)
 	router.Methods("GET").PathPrefix("/proxy/{service}").HandlerFunc(ep.proxy)
 	router.Methods("GET").PathPrefix("/").HandlerFunc(ep.echoHandler)
-	ep.tracer = ep.SvcTracer.GetTracer()
+	ep.tracer = ep.Instrumenter.Tracer()
 
-	// Add baggage fields to be extracted and propagated.
-	baggageHandler := baggage.New(baggageRequestID)
-
-	ep.handler = zmw.NewServerMiddleware(ep.tracer, zmw.EnableBaggage(baggageHandler))(router)
+	ep.handler = ep.Instrumenter.Middleware()(router)
 
 	return nil
 }
